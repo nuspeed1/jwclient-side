@@ -1,0 +1,159 @@
+<html>
+    <head>
+        <title>Live Stream</title>
+        <script>
+            /**
+             * This is an Instant Live poc to display an image slate when not active.
+             * Pass in the following querystring parameters to render the page:
+             * default_media_id - Media ID that should play by default when no live streams are available.
+             * player_library_id - The player library ID
+             * channel_id - the Instant Live channel ID.
+             * 
+             * Update SLATE_IMAGE with an absolute URL to use as the slate image. 
+             * 
+             * URL example
+             * https://localhost/index.html?default_media_id=MNO0198&player_library_id=ABCww9&channel_id=XYZjwu
+             * **/
+            let url = window.location.href;
+            let qs = url.split("?")[1]
+            qs = qs.split("&")
+            let params = {};
+            qs = qs.map((v, i, a)=>{
+                let kv = v.split("=")
+                let k = kv[0]
+                let val = kv[1]
+                params[k] = val
+                return {[k]:val}
+            })
+            
+            const CHANNEL_ID = params['channel_id'] || ""
+            const DEFAULT_MEDIA_ID = params['default_media_id'] || ""
+            const PLAYER_DIV_ID = "jwplayer_1"
+            const LIVESTREAM_COMPLETE_ERROR = 230001;
+            const PLAYER_LIBRARY_ID = params['player_library_id'] || ""
+            const SLATE_IMAGE = "https://legacy.npr.org/assets/_dmco/thumbnail1.jpg"
+
+        </script>
+    </head>
+    <body style="margin:0px;">
+        <script>
+            var loadPlayerLibrary = function(){
+                let playerDiv = document.createElement("div")
+                playerDiv.id = PLAYER_DIV_ID
+
+                let libraryDiv = document.createElement("script")
+                libraryDiv.src = `https://cdn.jwplayer.com/libraries/${PLAYER_LIBRARY_ID}.js`
+                libraryDiv.addEventListener("load", jwLibraryLoaded)
+                document.body.appendChild(playerDiv)
+                document.body.appendChild(libraryDiv)
+            }
+            var jwLibraryLoaded = function(){
+                let interval;
+                let live_media_id;
+
+                const VOD_CONFIG = {
+                    "file": `https://cdn.jwplayer.com/manifests/${DEFAULT_MEDIA_ID}.m3u8`,
+                    "image": SLATE_IMAGE,
+                    "repeat": true, 
+                    "autostart": false,
+                };
+                const player = jwplayer(PLAYER_DIV_ID).setup(VOD_CONFIG);
+
+                player.on("all", function(event, data){
+                    if (event == "time") return;
+
+                    if (event == "error" && data['code'] == LIVESTREAM_COMPLETE_ERROR){
+                        // assumes live stream ended
+                        player.stop()
+                        var elem = document.getElementsByClassName("jw-preview jw-reset")[0]
+                        elem.style.backgroundImage = `url("${SLATE_IMAGE}")`;
+                        elem.style.backgroundSize = "cover";
+                        
+                        setTimeout(()=>{
+                            // restart live stream check
+                            liveStreamCheck()
+                        },80000)
+                    }
+                })
+
+                var callAPI = async function(url, init){
+                    // get channel status
+                    return await fetch(url, init)
+                            .then(res => {
+                                if (!res.ok){
+                                    throw new Error(`Unable to fetch ${url}: ${res.statusText}`)
+                                }
+                                return res.json()
+                            })
+                }
+
+                var getChannelStatus = function(channelId){return callAPI(`https://cdn.jwplayer.com/live/channels/${channelId}.json`);}
+
+                var getPlaylist = function(mediaId) {return callAPI(`https://cdn.jwplayer.com/v2/media/${mediaId}`, { cache: "no-cache" });}
+
+                var sleep = function(ms) {return new Promise(resolve => setTimeout(resolve, ms));}
+
+                var liveStreamCheck = function(){
+                    interval = setInterval(async ()=>{
+                    getChannelStatus(CHANNEL_ID)
+                    .then(res=>{
+                        if (res['status'] == "idle") return;
+
+                        if (attemptPlayback(res)){
+                            console.log("clearing interval")
+                            clearInterval(interval)
+                        }
+                        })
+                    }, 1000)
+                }
+                
+                var attemptPlayback = async function (res){
+                    console.log('attemp playback')
+                    let status = res['status']
+                    let mediaId = res['current_event']
+                    let playlist;
+                    let attempts = 0;
+                    const MAX_RETRIES = 3;
+                    live_media_id = mediaId
+                    if (status == "active"){
+                        while(!playlist){
+                            try {
+                                playlist = await getPlaylist(mediaId)
+                            }catch(e){
+                                ++attempts;
+                                console.error(e);
+                                if (attempts >= MAX_RETRIES) {
+                                    console.log('Configuring Player with m3u8');
+                                    playlist = {
+                                    'playlist': [{
+                                        'mediaid': mediaId,
+                                        'file': `https://cdn.jwplayer.com/live/events/${mediaId}.m3u8`,
+                                        "image": SLATE_IMAGE
+                                        }]
+                                    };
+                                    break;
+                                }
+                                await sleep(2 ** (attempts - 1) * 5 * 1000);
+                            }
+                        }
+                        player.setConfig({
+                            autostart:false,
+                            repeat: false,
+                        });
+                        console.log("loading this playlist.....")
+                        console.log(playlist.playlist)
+                        player.load(playlist.playlist);
+                        player.play();
+                        return true
+                    }
+                    console.info(res['status'], res['current_event'])
+                }
+                liveStreamCheck()
+            }
+
+            window.addEventListener('DOMContentLoaded', loadPlayerLibrary);
+
+        </script>
+    </body>
+
+</html>
